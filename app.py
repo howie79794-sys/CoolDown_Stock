@@ -27,9 +27,11 @@ st.set_page_config(
 )
 
 # 默认股票代码列表
-DEFAULT_STOCKS = ["SH601727", "SH600580", "SH513010", "SZ300019", "SZ001280"]
+DEFAULT_STOCKS = ["SH601727", "SH600580", "SH513010", "SZ300019", "SZ001280", "SH601877", "SZ300857", "SZ002444"]
 # 基准日期
 BENCHMARK_DATE = datetime(2026, 1, 1)
+# 初始价格日期（用于显示初始价格列）
+INITIAL_PRICE_DATE = datetime(2026, 1, 5)
 
 # 主理人数据文件路径
 MANAGER_DATA_FILE = "manager_data.json"
@@ -276,6 +278,28 @@ def get_all_stocks_data(stock_codes: list, benchmark_date: datetime) -> dict:
         benchmark_market_cap = get_stock_info(yf_symbol)['market_cap']
         benchmark_pb = get_stock_info(yf_symbol)['pb_ratio']
         
+        # 找到初始价格日期（2026年1月5日）的价格
+        initial_price_trading_day = find_nearest_trading_day(df, INITIAL_PRICE_DATE)
+        if initial_price_trading_day is not None:
+            initial_price = df.loc[initial_price_trading_day, 'close']
+        else:
+            # 如果找不到初始价格日期，使用基准价格
+            initial_price = benchmark_price
+            initial_price_trading_day = benchmark_trading_day
+        
+        # 筛选从初始价格日期（2026年1月5日）到现在的数据，用于计算期间最高价和最低价
+        period_mask = df.index >= initial_price_trading_day
+        df_period = df[period_mask].copy()
+        
+        # 计算期间最高价和最低价（基于收盘价）
+        if not df_period.empty:
+            period_highest_close = df_period['close'].max()  # 期间最高收盘价
+            period_lowest_close = df_period['close'].min()   # 期间最低收盘价
+        else:
+            # 如果没有数据，使用当前值
+            period_highest_close = initial_price
+            period_lowest_close = initial_price
+        
         # 获取最新数据
         latest_data = df.iloc[-1]
         current_price = latest_data['close']
@@ -300,6 +324,9 @@ def get_all_stocks_data(stock_codes: list, benchmark_date: datetime) -> dict:
             'benchmark_price': benchmark_price,
             'benchmark_market_cap': benchmark_market_cap,
             'benchmark_pb': benchmark_pb,
+            'initial_price': initial_price,
+            'period_highest_price': period_highest_close,  # 期间最高价（从2026-01-05至今的收盘价最高值）
+            'period_lowest_price': period_lowest_close,    # 期间最低价（从2026-01-05至今的收盘价最低值）
             'current_price': current_price,
             'current_high': current_high,
             'current_low': current_low,
@@ -666,7 +693,7 @@ def main():
         st.subheader("股票代码设置")
         
         stock_codes = []
-        for i in range(5):
+        for i in range(len(DEFAULT_STOCKS)):
             default_code = DEFAULT_STOCKS[i] if i < len(DEFAULT_STOCKS) else ""
             code = st.text_input(
                 f"股票 {i+1}",
@@ -803,6 +830,7 @@ def main():
     chart_type = st.selectbox(
         "选择对比维度",
         ["市值变动", "成交量趋势", "市净率走势"],
+        index=1,  # 默认选择"成交量趋势"
         key="chart_type"
     )
     
@@ -840,9 +868,10 @@ def main():
         table_data.append({
             '股票代码': code,
             '所属主理人': manager_name if manager_name else "未设置",
+            '2026/1/5收盘': f"¥{data['initial_price']:.2f}",
             '最新价格': f"¥{data['current_price']:.2f}",
-            '最高价': f"¥{data['current_high']:.2f}",
-            '最低价': f"¥{data['current_low']:.2f}",
+            '期间最高价': f"¥{data['period_highest_price']:.2f}",
+            '期间最低价': f"¥{data['period_lowest_price']:.2f}",
             '市值': format_number(data['current_market_cap']),
             '市净率': f"{data['current_pb']:.2f}" if data['current_pb'] > 0 else "N/A",
             '成交量': format_number(data['current_volume']),
