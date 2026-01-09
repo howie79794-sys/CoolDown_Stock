@@ -20,7 +20,7 @@ warnings.filterwarnings('ignore')
 
 # 页面配置
 st.set_page_config(
-    page_title="CoolDown股票监控仪表板",
+    page_title="Cooldown龙虎榜",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -681,7 +681,7 @@ def format_number(num: float, is_percentage: bool = False) -> str:
 
 # 主程序
 def main():
-    st.title("📈 CoolDown股票监控仪表板")
+    st.title("Cooldown龙虎榜")
     st.markdown("---")
     
     # 加载主理人数据
@@ -781,17 +781,29 @@ def main():
     
     # 指标卡汇总
     st.subheader("📊 指标卡汇总")
+    
+    # 按照今年总体升跌幅排序（从高到低，从左到右）
+    sorted_stocks = sorted(
+        all_data.items(),
+        key=lambda x: x[1]['ytd_return'],
+        reverse=True
+    )
+    
     cols = st.columns(len(all_data))
     
-    for idx, (code, data) in enumerate(all_data.items()):
+    for idx, (code, data) in enumerate(sorted_stocks):
         with cols[idx]:
             # 获取主理人信息
             manager_info = get_manager_info(code, manager_data)
             manager_name = manager_info.get('name', '')
             avatar_path = manager_info.get('avatar', '')
             
+            # 使用居中对齐的容器包裹所有内容
+            st.markdown("<div style='text-align: center;'>", unsafe_allow_html=True)
+            
             # 显示主理人信息（如果有）
             if manager_name or avatar_path:
+                # 使用居中对齐的flex布局
                 manager_cols = st.columns([1, 3])
                 with manager_cols[0]:
                     if avatar_path and os.path.exists(avatar_path):
@@ -804,14 +816,29 @@ def main():
                     else:
                         st.markdown("主理人")
             
-            ytd_return = data['ytd_return']
-            color = "normal" if ytd_return >= 0 else "inverse"
+            # 显示股票代码和价格
             st.metric(
                 label=code,
                 value=f"¥{data['current_price']:.2f}",
-                delta=f"{ytd_return:.2f}%",
-                delta_color=color
+                delta=None
             )
+            
+            # 显示升跌幅（自定义颜色：上涨红色，下跌绿色）
+            ytd_return = data['ytd_return']
+            if ytd_return >= 0:
+                color = "#FF4444"  # 红色
+            else:
+                color = "#00AA00"  # 绿色
+            
+            delta_html = f'<div style="font-size: 0.875rem; color: {color}; font-weight: 600; margin-top: 0.25rem;">{ytd_return:+.2f}%</div>'
+            st.markdown(delta_html, unsafe_allow_html=True)
+            
+            # 标注前三名，显示在涨跌幅数字下方，与头像和名字居中对齐
+            if idx < 3:
+                rank_text = f"<div style='font-weight: bold; font-size: 1rem; margin-top: 0.25rem; color: #000000;'>No.{idx + 1}</div>"
+                st.markdown(rank_text, unsafe_allow_html=True)
+            
+            st.markdown("</div>", unsafe_allow_html=True)
     
     st.markdown("---")
     
@@ -881,14 +908,16 @@ def main():
     
     df_table = pd.DataFrame(table_data)
     
-    # 设置升幅列的颜色
+    # 设置升幅列的颜色（深色模式友好）
     def color_ytd_return(val):
         try:
             return_val = float(val.replace('%', ''))
             if return_val >= 0:
-                return 'background-color: #FFE5E5'  # 浅红色
+                # 深红色背景，适合深色模式，文字为柔和的红色
+                return 'background-color: #3D1818; color: #FF8888'
             else:
-                return 'background-color: #E5FFE5'  # 浅绿色
+                # 深绿色背景，适合深色模式，文字为柔和的绿色
+                return 'background-color: #183D18; color: #88FF88'
         except:
             return ''
     
