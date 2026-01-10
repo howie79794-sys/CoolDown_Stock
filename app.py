@@ -28,6 +28,28 @@ st.set_page_config(
 
 # 默认股票代码列表
 DEFAULT_STOCKS = ["SH601727", "SH600580", "SH513010", "SZ300019", "SZ001280", "SH601877", "SZ300857", "SZ002444"]
+
+# 股票代码到中文名称的映射表（备用方案，如果yfinance无法获取中文名称）
+STOCK_NAME_MAPPING = {
+    "SH601727": "上海电气",
+    "SH600580": "卧龙电驱",
+    "SH513010": "纳斯达克ETF",
+    "SZ300019": "硅宝科技",
+    "SZ001280": "三联锻造",
+    "SH601877": "正泰电器",
+    "SZ300857": "协创数据",
+    "SZ002444": "巨星科技",
+    # 也可以添加不带前缀的映射
+    "601727": "上海电气",
+    "600580": "卧龙电驱",
+    "513010": "纳斯达克ETF",
+    "300019": "硅宝科技",
+    "001280": "三联锻造",
+    "601877": "正泰电器",
+    "300857": "协创数据",
+    "002444": "巨星科技",
+}
+
 # 基准日期
 BENCHMARK_DATE = datetime(2026, 1, 1)
 # 初始价格日期（用于显示初始价格列）
@@ -134,12 +156,13 @@ def fetch_stock_data(symbol: str, start_date: datetime, end_date: datetime = Non
 
 
 @st.cache_data(ttl=3600)
-def get_stock_info(symbol: str) -> dict:
+def get_stock_info(symbol: str, original_code: str = None) -> dict:
     """
-    获取股票基本信息（市值、市净率等）
+    获取股票基本信息（市值、市净率、股票名称等）
     
     参数:
-        symbol: 股票代码（yfinance 格式）
+        symbol: 股票代码（yfinance 格式，如 601727.SS）
+        original_code: 原始股票代码（如 SH601727），用于查找中文名称映射
     
     返回:
         包含股票信息的字典
@@ -148,18 +171,62 @@ def get_stock_info(symbol: str) -> dict:
         ticker = yf.Ticker(symbol)
         info = ticker.info
         
+        # 首先尝试从映射表获取中文名称
+        stock_name = None
+        if original_code:
+            stock_name = STOCK_NAME_MAPPING.get(original_code)
+        if not stock_name:
+            # 尝试使用不带前缀的代码
+            code_only = symbol.split('.')[0] if '.' in symbol else symbol
+            stock_name = STOCK_NAME_MAPPING.get(code_only)
+        
+        # 如果映射表中没有，尝试从yfinance获取
+        if not stock_name:
+            stock_name = (info.get('longName') or 
+                         info.get('shortName') or 
+                         info.get('name') or 
+                         info.get('displayName'))
+        
+        # 如果名称包含中文字符，使用它
+        import re
+        has_chinese = bool(re.search(r'[\u4e00-\u9fff]', stock_name or ''))
+        
+        # 如果没有中文名称，尝试使用英文简称
+        if not stock_name or (not has_chinese and stock_name):
+            # 从yfinance获取的可能是英文名称，尝试获取简称
+            english_name = (info.get('shortName') or 
+                           info.get('longName') or 
+                           info.get('name'))
+            
+            if english_name and not has_chinese:
+                # 如果是英文名称，使用它作为简称
+                # 如果名称太长，截断到合理长度
+                if len(english_name) > 30:
+                    english_name = english_name[:30] + '...'
+                stock_name = english_name
+        
+        # 如果还是没有名称，优先使用映射表，否则使用股票代码作为备用
+        if not stock_name:
+            stock_name = symbol.split('.')[0] if '.' in symbol else symbol
+        
         return {
             'market_cap': info.get('marketCap', 0),
             'pb_ratio': info.get('priceToBook', 0),
             'shares_outstanding': info.get('sharesOutstanding', 0),
             'volume_24h': info.get('volume24Hr', 0),
+            'stock_name': stock_name,
         }
     except Exception as e:
+        # 如果出错，尝试从映射表获取，否则使用股票代码
+        code_only = symbol.split('.')[0] if '.' in symbol else symbol
+        stock_name = STOCK_NAME_MAPPING.get(code_only) or STOCK_NAME_MAPPING.get(original_code or '') or code_only
+        
         return {
             'market_cap': 0,
             'pb_ratio': 0,
             'shares_outstanding': 0,
             'volume_24h': 0,
+            'stock_name': stock_name,
         }
 
 
@@ -275,8 +342,9 @@ def get_all_stocks_data(stock_codes: list, benchmark_date: datetime) -> dict:
             continue
         
         benchmark_price = df.loc[benchmark_trading_day, 'close']
-        benchmark_market_cap = get_stock_info(yf_symbol)['market_cap']
-        benchmark_pb = get_stock_info(yf_symbol)['pb_ratio']
+        benchmark_stock_info = get_stock_info(yf_symbol, original_code=code)
+        benchmark_market_cap = benchmark_stock_info['market_cap']
+        benchmark_pb = benchmark_stock_info['pb_ratio']
         
         # 找到初始价格日期（2026年1月5日）的价格
         initial_price_trading_day = find_nearest_trading_day(df, INITIAL_PRICE_DATE)
@@ -307,11 +375,12 @@ def get_all_stocks_data(stock_codes: list, benchmark_date: datetime) -> dict:
         current_low = latest_data['low']
         current_volume = latest_data['volume']
         
-        # 获取最新信息
-        current_info = get_stock_info(yf_symbol)
+        # 获取最新信息（传入原始代码以便从映射表获取中文名称）
+        current_info = get_stock_info(yf_symbol, original_code=code)
         current_market_cap = current_info['market_cap']
         current_pb = current_info['pb_ratio']
         shares_outstanding = current_info['shares_outstanding']
+        stock_name = current_info.get('stock_name', '')
         
         # 计算指标
         ytd_return = calculate_ytd_return(current_price, benchmark_price)
@@ -336,6 +405,7 @@ def get_all_stocks_data(stock_codes: list, benchmark_date: datetime) -> dict:
             'ytd_return': ytd_return,
             'turnover_rate': turnover_rate,
             'shares_outstanding': shares_outstanding,
+            'stock_name': stock_name,  # 股票名称（中文）
         }
     
     return all_data
@@ -625,6 +695,60 @@ def save_avatar(uploaded_file, stock_code: str) -> str:
         return ""
 
 
+def is_valid_image(file_path: str) -> bool:
+    """
+    验证文件是否是有效的图像文件
+    
+    参数:
+        file_path: 文件路径
+    
+    返回:
+        如果是有效图像返回True，否则返回False
+    """
+    if not file_path or not os.path.exists(file_path):
+        return False
+    
+    try:
+        # 尝试打开并验证图像
+        with Image.open(file_path) as img:
+            img.verify()  # 验证图像文件是否完整
+        return True
+    except Exception:
+        return False
+
+
+def safe_display_image(image_path: str, width: int = 80, caption: str = None, use_container_width: bool = False):
+    """
+    安全地显示图像，如果图像损坏或无法识别则显示占位符
+    
+    参数:
+        image_path: 图像文件路径
+        width: 图像宽度
+        caption: 图像标题
+        use_container_width: 是否使用容器宽度
+    """
+    if not image_path or not os.path.exists(image_path):
+        st.write("👤" if not caption else f"👤 {caption}")
+        return
+    
+    try:
+        # 先验证图像是否有效
+        if not is_valid_image(image_path):
+            # 图像文件损坏，显示占位符
+            st.write("👤" if not caption else f"👤 {caption}")
+            return
+        
+        # 使用文件路径直接显示，让Streamlit处理
+        # Streamlit的st.image可以直接接受文件路径
+        if use_container_width:
+            st.image(image_path, caption=caption, use_container_width=True)
+        else:
+            st.image(image_path, width=width, caption=caption)
+    except Exception:
+        # 如果显示失败，静默显示占位符
+        st.write("👤" if not caption else f"👤 {caption}")
+
+
 def display_avatar(avatar_path: str, size: int = 50) -> str:
     """
     生成头像的HTML显示代码
@@ -720,8 +844,8 @@ def main():
                 manager_info = get_manager_info(code, manager_data)
                 
                 # 显示当前头像（如果有）
-                if manager_info.get('avatar') and os.path.exists(manager_info['avatar']):
-                    st.image(manager_info['avatar'], width=80, caption="当前头像")
+                if manager_info.get('avatar'):
+                    safe_display_image(manager_info['avatar'], width=80, caption="当前头像")
                 
                 # 主理人姓名输入
                 manager_name = st.text_input(
@@ -806,8 +930,8 @@ def main():
                 # 使用居中对齐的flex布局
                 manager_cols = st.columns([1, 3])
                 with manager_cols[0]:
-                    if avatar_path and os.path.exists(avatar_path):
-                        st.image(avatar_path, width=50, use_container_width=True)
+                    if avatar_path:
+                        safe_display_image(avatar_path, width=50, use_container_width=True)
                     else:
                         st.write("👤")
                 with manager_cols[1]:
@@ -885,48 +1009,87 @@ def main():
     # 详细数据表格
     st.subheader("📋 详细数据表格")
     
-    # 准备表格数据
+    # 准备表格数据（保留原始数值用于排序）
     table_data = []
     for code, data in all_data.items():
         # 获取主理人信息
         manager_info = get_manager_info(code, manager_data)
         manager_name = manager_info.get('name', '')
         
+        # 获取股票名称
+        stock_name = data.get('stock_name', '')
+        
+        # 如果股票名称为空或者是代码本身，尝试从映射表获取
+        if not stock_name or stock_name == code or stock_name == code.split('.')[0]:
+            # 尝试从映射表获取中文名称
+            stock_name = STOCK_NAME_MAPPING.get(code) or STOCK_NAME_MAPPING.get(code.split('.')[0] if '.' in code else code) or ''
+        
+        # 如果还是没有名称，至少显示一个占位符
+        if not stock_name:
+            stock_name = 'N/A'
+        
         table_data.append({
             '股票代码': code,
+            '股票名称': stock_name,
             '所属主理人': manager_name if manager_name else "未设置",
-            '2026/1/5收盘': f"¥{data['initial_price']:.2f}",
-            '最新价格': f"¥{data['current_price']:.2f}",
-            '期间最高价': f"¥{data['period_highest_price']:.2f}",
-            '期间最低价': f"¥{data['period_lowest_price']:.2f}",
-            '市值': format_number(data['current_market_cap']),
-            '市净率': f"{data['current_pb']:.2f}" if data['current_pb'] > 0 else "N/A",
-            '成交量': format_number(data['current_volume']),
-            '换手率': f"{data['turnover_rate']:.2f}%",
-            '今年总体升幅': f"{data['ytd_return']:.2f}%",
+            '2026/1/5收盘': data['initial_price'],  # 保留原始数值用于排序
+            '最新价格': data['current_price'],  # 保留原始数值用于排序
+            '期间最高价': data['period_highest_price'],  # 保留原始数值用于排序
+            '期间最低价': data['period_lowest_price'],  # 保留原始数值用于排序
+            '市值': data['current_market_cap'],  # 保留原始数值用于排序
+            '市净率': data['current_pb'] if data['current_pb'] > 0 else None,  # 保留原始数值用于排序
+            '成交量': data['current_volume'],  # 保留原始数值用于排序
+            '换手率': data['turnover_rate'],  # 保留原始数值用于排序
+            '今年总体升幅': data['ytd_return'],  # 保留原始数值用于排序
         })
     
     df_table = pd.DataFrame(table_data)
     
-    # 设置升幅列的颜色（深色模式友好）
-    def color_ytd_return(val):
+    # 默认按"今年总体升幅"从高到低排序
+    df_table = df_table.sort_values('今年总体升幅', ascending=False)
+    
+    # 设置升幅列的颜色样式
+    def style_ytd_return(val):
+        """为升幅列设置颜色"""
+        if pd.isna(val):
+            return ''
         try:
-            return_val = float(val.replace('%', ''))
-            if return_val >= 0:
-                # 深红色背景，适合深色模式，文字为柔和的红色
+            if val >= 0:
                 return 'background-color: #3D1818; color: #FF8888'
             else:
-                # 深绿色背景，适合深色模式，文字为柔和的绿色
                 return 'background-color: #183D18; color: #88FF88'
         except:
             return ''
     
-    styled_df = df_table.style.applymap(
-        color_ytd_return,
+    # 配置列显示格式，支持排序
+    column_config = {
+        '股票代码': st.column_config.TextColumn('股票代码', width="small"),
+        '股票名称': st.column_config.TextColumn('股票名称', width="medium"),
+        '所属主理人': st.column_config.TextColumn('所属主理人', width="small"),
+        '2026/1/5收盘': st.column_config.NumberColumn('2026/1/5收盘', format="¥%.2f"),
+        '最新价格': st.column_config.NumberColumn('最新价格', format="¥%.2f"),
+        '期间最高价': st.column_config.NumberColumn('期间最高价', format="¥%.2f"),
+        '期间最低价': st.column_config.NumberColumn('期间最低价', format="¥%.2f"),
+        '市值': st.column_config.NumberColumn('市值', format="%.0f"),
+        '市净率': st.column_config.NumberColumn('市净率', format="%.2f"),
+        '成交量': st.column_config.NumberColumn('成交量', format="%.0f"),
+        '换手率': st.column_config.NumberColumn('换手率', format="%.2f%%"),
+        '今年总体升幅': st.column_config.NumberColumn('今年总体升幅', format="%.2f%%"),
+    }
+    
+    # 应用样式到升幅列
+    styled_df = df_table.style.map(
+        style_ytd_return,
         subset=['今年总体升幅']
     )
     
-    st.dataframe(styled_df, use_container_width=True, hide_index=True)
+    # 显示表格，支持点击列头排序（Streamlit的dataframe支持列配置和排序）
+    st.dataframe(
+        styled_df,
+        use_container_width=True,
+        hide_index=True,
+        column_config=column_config
+    )
     
     # 在主理人列下方显示头像（如果有）
     st.markdown("**主理人头像：**")
@@ -937,8 +1100,8 @@ def main():
             avatar_path = manager_info.get('avatar', '')
             manager_name = manager_info.get('name', '')
             
-            if avatar_path and os.path.exists(avatar_path):
-                st.image(avatar_path, width=80, caption=f"{code}\n{manager_name}" if manager_name else code)
+            if avatar_path:
+                safe_display_image(avatar_path, width=80, caption=f"{code}\n{manager_name}" if manager_name else code)
             else:
                 st.write(f"{code}: 无头像")
     
